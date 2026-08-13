@@ -81,6 +81,15 @@ def run_watch(interval: float, *, monitor: SysmonWatch | None = None) -> tuple[i
                                 f"[CORRELATED] {kind} | {result.event.process or 'unknown process'} | "
                                 f"attached to {incident.incident_id}"
                             )
+                    if result.analysis:
+                        analysis = result.analysis
+                        print("[ANALYSIS]")
+                        print(f"Verdict: {analysis.verdict.value.upper()}")
+                        print(f"Confidence: {analysis.confidence:.2f}")
+                        print(f"Severity: {analysis.severity.value.upper()}")
+                        print(f"Risk: {analysis.risk_score}/100")
+                        print(f"Reasons: {', '.join(item.value for item in analysis.reason_codes) or 'none'}")
+                        print(f"Human review: {'required' if analysis.requires_human_review else 'not required'}")
             except (ValueError, SysmonXmlError, WindowsEventLogError, StorageError) as error:
                 print(f"SiberAI watch error: {error}")
             time.sleep(interval)

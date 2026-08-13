@@ -12,6 +12,8 @@ from engine.models.detection import Detection, Severity
 from engine.storage.sqlite import SQLiteStorage
 from engine.tests.test_sysmon_network import network_xml
 from engine.tests.test_sysmon_xml import sysmon_xml
+from engine.analysis.decision_engine import DECISION_ENGINE_VERSION, analyze_incident
+from engine.models.analysis import Verdict
 
 
 class CorrelationTests(unittest.TestCase):
@@ -121,7 +123,7 @@ class CorrelationTests(unittest.TestCase):
     def test_storage_list_and_detail_retrieval(self) -> None:
         event = self.process_event()
         result = self.persist_and_correlate(
-            event, [self.detection(event.event_id, Severity.HIGH, 85)]
+            event, [self.detection(event.event_id, Severity.HIGH, 85, "DET-PS-001")]
         )
         listed = self.storage.recent_incidents()
         detail = self.storage.get_incident_detail(result.incident.incident_id)
@@ -129,6 +131,31 @@ class CorrelationTests(unittest.TestCase):
         self.assertEqual(detail.incident.primary_event_id, event.event_id)
         self.assertEqual(detail.events[0].event_id, event.event_id)
         self.assertEqual(detail.detections[0].event_id, event.event_id)
+
+    def test_analysis_persistence_and_reanalysis_update_current_row(self) -> None:
+        event = self.process_event()
+        result = self.persist_and_correlate(
+            event, [self.detection(event.event_id, Severity.HIGH, 85, "DET-PS-001")]
+        )
+        detail = self.storage.get_incident_detail(result.incident.incident_id)
+        first_time = event.timestamp + timedelta(minutes=1)
+        first = self.storage.store_analysis(
+            analyze_incident(detail.incident, detail.events, detail.detections, now=first_time)
+        )
+        network = replace(self.network_event(), timestamp=event.timestamp + timedelta(seconds=30))
+        self.persist_and_correlate(network, [])
+        detail = self.storage.get_incident_detail(result.incident.incident_id)
+        second_time = first_time + timedelta(minutes=1)
+        second = self.storage.store_analysis(
+            analyze_incident(detail.incident, detail.events, detail.detections, now=second_time)
+        )
+        self.assertEqual(first.analysis_id, second.analysis_id)
+        self.assertEqual(second.engine_version, DECISION_ENGINE_VERSION)
+        self.assertEqual(second.created_at, first_time)
+        self.assertEqual(second.updated_at, second_time)
+        self.assertEqual(second.verdict, Verdict.LIKELY_MALICIOUS)
+        count = self.storage._connection.execute("SELECT count(*) FROM incident_analyses").fetchone()[0]
+        self.assertEqual(count, 1)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -8,6 +8,9 @@ from typing import Any
 from engine.models.detection import Detection, Severity
 from engine.models.event import SecurityEvent
 from engine.models.incident import Incident, IncidentStatus
+from engine.models.analysis import (
+    AnalysisEvidence, EvidenceType, IncidentAnalysis, ReasonCode, RecommendedAction, Verdict,
+)
 
 
 class StorageError(RuntimeError):
@@ -151,6 +154,26 @@ class SQLiteStorage:
         );
         CREATE INDEX IF NOT EXISTS idx_incidents_updated_at ON incidents(updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_incidents_process_guid ON incidents(process_guid, status);
+        CREATE TABLE IF NOT EXISTS incident_analyses (
+            analysis_id TEXT PRIMARY KEY,
+            incident_id TEXT NOT NULL UNIQUE,
+            verdict TEXT NOT NULL,
+            confidence REAL NOT NULL CHECK (confidence BETWEEN 0.0 AND 1.0),
+            severity TEXT NOT NULL,
+            risk_score INTEGER NOT NULL CHECK (risk_score BETWEEN 0 AND 100),
+            reason_codes_json TEXT NOT NULL,
+            detection_ids_json TEXT NOT NULL,
+            mitre_json TEXT NOT NULL,
+            actions_json TEXT NOT NULL,
+            evidence_json TEXT NOT NULL,
+            requires_human_review INTEGER NOT NULL,
+            engine_version TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (incident_id) REFERENCES incidents(incident_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_incident_analyses_incident_id
+            ON incident_analyses(incident_id);
         """
         try:
             self._connection.executescript(schema)
@@ -375,6 +398,53 @@ class SQLiteStorage:
             event_ids=event_ids, detection_ids=detection_ids,
         )
 
+    def store_analysis(self, analysis: IncidentAnalysis) -> IncidentAnalysis:
+        existing = self.get_analysis(analysis.incident_id)
+        created_at = existing.created_at if existing is not None else analysis.created_at
+        evidence_json = json.dumps([
+            {key: (value.value if isinstance(value, EvidenceType) else value) for key, value in asdict(item).items()}
+            for item in analysis.evidence
+        ], sort_keys=True)
+        values = (
+            analysis.analysis_id, analysis.incident_id, analysis.verdict.value,
+            analysis.confidence, analysis.severity.value, analysis.risk_score,
+            json.dumps([item.value for item in analysis.reason_codes]),
+            json.dumps(analysis.contributing_detection_ids),
+            json.dumps(analysis.mitre_techniques),
+            json.dumps([item.value for item in analysis.recommended_actions]),
+            evidence_json, int(analysis.requires_human_review), analysis.engine_version,
+            _utc_text(created_at), _utc_text(analysis.updated_at),
+        )
+        try:
+            self._connection.execute(
+                """INSERT INTO incident_analyses (
+                    analysis_id, incident_id, verdict, confidence, severity, risk_score,
+                    reason_codes_json, detection_ids_json, mitre_json, actions_json,
+                    evidence_json, requires_human_review, engine_version, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(incident_id) DO UPDATE SET
+                    analysis_id=excluded.analysis_id, verdict=excluded.verdict,
+                    confidence=excluded.confidence, severity=excluded.severity,
+                    risk_score=excluded.risk_score, reason_codes_json=excluded.reason_codes_json,
+                    detection_ids_json=excluded.detection_ids_json, mitre_json=excluded.mitre_json,
+                    actions_json=excluded.actions_json, evidence_json=excluded.evidence_json,
+                    requires_human_review=excluded.requires_human_review,
+                    engine_version=excluded.engine_version, updated_at=excluded.updated_at""",
+                values,
+            )
+            self._connection.commit()
+        except sqlite3.Error as error:
+            self._connection.rollback()
+            raise StorageError(f"Unable to store incident analysis: {error}") from error
+        stored = self.get_analysis(analysis.incident_id)
+        if stored is None:
+            raise StorageError("Unable to retrieve stored incident analysis")
+        return stored
+
+    def get_analysis(self, incident_id: str) -> IncidentAnalysis | None:
+        rows = self._query("SELECT * FROM incident_analyses WHERE incident_id = ?", (incident_id,))
+        return _stored_analysis(rows[0]) if rows else None
+
     def _insert(self, sql: str, values: tuple[object, ...], label: str) -> bool:
         try:
             cursor = self._connection.execute(sql, values)
@@ -447,4 +517,33 @@ def _stored_detection(row: sqlite3.Row) -> StoredDetection:
         event_timestamp=_parse_datetime(row["event_timestamp"]) if "event_timestamp" in row.keys() else None,
         host=row["host"] if "host" in row.keys() else None,
         process=row["process"] if "process" in row.keys() else None,
+    )
+
+
+def _stored_analysis(row: sqlite3.Row) -> IncidentAnalysis:
+    evidence = [
+        AnalysisEvidence(
+            type=EvidenceType(item["type"]),
+            event_id=item["event_id"],
+            detection_id=item.get("detection_id"),
+            rule_id=item.get("rule_id"),
+            process_guid=item.get("process_guid"),
+            destination_ip=item.get("destination_ip"),
+            destination_port=item.get("destination_port"),
+        )
+        for item in json.loads(row["evidence_json"])
+    ]
+    return IncidentAnalysis(
+        analysis_id=row["analysis_id"], incident_id=row["incident_id"],
+        verdict=Verdict(row["verdict"]), confidence=row["confidence"],
+        severity=Severity(row["severity"]), risk_score=row["risk_score"],
+        reason_codes=[ReasonCode(item) for item in json.loads(row["reason_codes_json"])],
+        contributing_detection_ids=json.loads(row["detection_ids_json"]),
+        mitre_techniques=json.loads(row["mitre_json"]),
+        recommended_actions=[RecommendedAction(item) for item in json.loads(row["actions_json"])],
+        evidence=evidence,
+        requires_human_review=bool(row["requires_human_review"]),
+        engine_version=row["engine_version"],
+        created_at=_parse_datetime(row["created_at"]),
+        updated_at=_parse_datetime(row["updated_at"]),
     )

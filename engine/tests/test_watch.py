@@ -130,6 +130,9 @@ class SysmonWatchTests(unittest.TestCase):
             self.assertEqual(storage.recent_detections()[0].rule_id, "DET-PS-001")
             self.assertEqual(len(storage.recent_incidents()), 1)
             self.assertTrue(results[0].correlation.created)
+            self.assertIsNotNone(results[0].analysis)
+            self.assertEqual(results[0].analysis.verdict.value, "suspicious")
+            self.assertIsNotNone(storage.get_analysis(results[0].correlation.incident.incident_id))
 
     def test_watch_persists_ordinary_event_without_detection(self) -> None:
         ordinary = sysmon_xml(record_id=101, command_line="powershell.exe -NoProfile Get-Process")
@@ -157,6 +160,41 @@ class SysmonWatchTests(unittest.TestCase):
             watch.establish_baseline()
             with patch("engine.watch.correlate", side_effect=StorageError("correlation failed")):
                 with self.assertRaisesRegex(StorageError, "correlation failed"):
+                    watch.poll()
+            self.assertEqual(watch.checkpoint, 100)
+
+    def test_new_correlated_evidence_triggers_reanalysis(self) -> None:
+        process_guid = "{A23D7E91-7712-0001-8F10-000000001A00}"
+        matching_network = (
+            network_xml(record_id=102)
+            .replace("{NET-PROCESS-GUID}", process_guid)
+            .replace("2026-08-12 20:01:02.123", "2026-08-12 19:33:02.123")
+            .replace("<Computer>ServoPC</Computer>", "<Computer>WS-FIN-042.siberai.local</Computer>")
+        )
+        batches = [[sysmon_xml(record_id=101)], [matching_network]]
+        with TemporaryDirectory() as directory, SQLiteStorage(Path(directory) / "watch.db") as storage:
+            watch = SysmonWatch(
+                recent_collector=lambda **kwargs: [sysmon_xml(record_id=100)],
+                newer_collector=lambda *args, **kwargs: batches.pop(0),
+                storage=storage,
+            )
+            watch.establish_baseline()
+            first = watch.poll()[0]
+            second = watch.poll()[0]
+            self.assertEqual(first.analysis.verdict.value, "suspicious")
+            self.assertEqual(second.analysis.verdict.value, "likely_malicious")
+            self.assertEqual(first.analysis.analysis_id, second.analysis.analysis_id)
+
+    def test_analysis_failure_does_not_advance_checkpoint(self) -> None:
+        with TemporaryDirectory() as directory, SQLiteStorage(Path(directory) / "watch.db") as storage:
+            watch = SysmonWatch(
+                recent_collector=lambda **kwargs: [sysmon_xml(record_id=100)],
+                newer_collector=lambda *args, **kwargs: [sysmon_xml(record_id=101)],
+                storage=storage,
+            )
+            watch.establish_baseline()
+            with patch("engine.watch.analyze_incident", side_effect=RuntimeError("analysis failed")):
+                with self.assertRaisesRegex(RuntimeError, "analysis failed"):
                     watch.poll()
             self.assertEqual(watch.checkpoint, 100)
 

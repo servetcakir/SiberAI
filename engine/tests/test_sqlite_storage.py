@@ -188,7 +188,7 @@ class SQLiteStorageTests(unittest.TestCase):
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             )}
         self.assertTrue({"process_guid", "source_port", "destination_hostname"} <= columns)
-        self.assertTrue({"incidents", "incident_events", "incident_detections"} <= tables)
+        self.assertTrue({"incidents", "incident_events", "incident_detections", "incident_analyses"} <= tables)
 
 
 if __name__ == "__main__":

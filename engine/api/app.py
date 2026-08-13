@@ -13,6 +13,7 @@ from engine.api.schemas import (
     HealthResponse,
     IncidentDetailResponse,
     IncidentResponse,
+    IncidentAnalysisResponse,
 )
 from engine.storage.sqlite import SQLiteStorage, StorageError
 from engine.models.incident import Incident
@@ -127,6 +128,21 @@ def create_app() -> FastAPI:
             events=[EventResponse.model_validate(item) for item in detail.events],
             detections=[DetectionResponse.model_validate(item) for item in detail.detections],
         )
+
+    @application.get(
+        "/api/incidents/{incident_id}/analysis",
+        response_model=IncidentAnalysisResponse,
+    )
+    def incident_analysis(
+        incident_id: str,
+        storage: SQLiteStorage = Depends(get_storage),
+    ) -> IncidentAnalysisResponse:
+        if storage.get_incident(incident_id) is None:
+            raise HTTPException(status_code=404, detail="Incident not found")
+        analysis = storage.get_analysis(incident_id)
+        if analysis is None:
+            raise HTTPException(status_code=404, detail="Incident analysis not found")
+        return IncidentAnalysisResponse.model_validate(analysis)
 
     return application
 

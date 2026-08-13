@@ -15,6 +15,7 @@ from engine.ingestion.sysmon import normalize_sysmon_event
 from engine.ingestion.sysmon_xml import parse_sysmon_xml
 from engine.tests.test_sysmon_network import network_xml
 from engine.correlation.engine import correlate
+from engine.analysis.decision_engine import analyze_incident
 
 
 class ApiTests(unittest.TestCase):
@@ -132,6 +133,8 @@ class ApiTests(unittest.TestCase):
         detection = detect(event)[0]
         with SQLiteStorage(self.database) as storage:
             result = correlate(event, [detection], storage)
+            detail = storage.get_incident_detail(result.incident.incident_id)
+            storage.store_analysis(analyze_incident(detail.incident, detail.events, detail.detections))
         return result.incident.incident_id
 
     def test_incident_list_endpoint(self) -> None:
@@ -157,6 +160,30 @@ class ApiTests(unittest.TestCase):
         response = self.client.get("/api/incidents/missing")
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json(), {"detail": "Incident not found"})
+
+    def test_analysis_endpoint_returns_structured_analysis(self) -> None:
+        incident_id = self.create_incident()
+        response = self.client.get(f"/api/incidents/{incident_id}/analysis")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["incident_id"], incident_id)
+        self.assertEqual(body["verdict"], "suspicious")
+        self.assertEqual(body["engine_version"], "decision-v0")
+        self.assertEqual(body["reason_codes"], ["encoded_powershell"])
+        self.assertEqual(body["evidence"][0]["rule_id"], "DET-PS-001")
+
+    def test_analysis_endpoint_distinguishes_missing_incident_and_analysis(self) -> None:
+        missing = self.client.get("/api/incidents/missing/analysis")
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(missing.json(), {"detail": "Incident not found"})
+        event = normalize_process_create(parse_process_create_xml(sysmon_xml(record_id=8421)))
+        with SQLiteStorage(self.database) as storage:
+            incident = correlate(event, [detect(event)[0]], storage).incident
+            storage._connection.execute("DELETE FROM incident_analyses WHERE incident_id = ?", (incident.incident_id,))
+            storage._connection.commit()
+        no_analysis = self.client.get(f"/api/incidents/{incident.incident_id}/analysis")
+        self.assertEqual(no_analysis.status_code, 404)
+        self.assertEqual(no_analysis.json(), {"detail": "Incident analysis not found"})
 
     def test_database_failure_does_not_leak_path(self) -> None:
         secret_path = r"C:\secret\private\siberai.db"

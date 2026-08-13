@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from engine.detection.engine import detect
 from engine.correlation.engine import CorrelationResult, correlate
+from engine.analysis.decision_engine import analyze_incident
 from engine.ingestion.sysmon import normalize_sysmon_event
 from engine.ingestion.sysmon_xml import parse_sysmon_xml
 from engine.ingestion.windows_event_log import (
@@ -11,6 +12,7 @@ from engine.ingestion.windows_event_log import (
 )
 from engine.models.detection import Detection
 from engine.models.event import SecurityEvent
+from engine.models.analysis import IncidentAnalysis
 from engine.storage.sqlite import SQLiteStorage
 
 
@@ -23,6 +25,7 @@ class ProcessedEvent:
     event: SecurityEvent
     detections: list[Detection]
     correlation: CorrelationResult | None = None
+    analysis: IncidentAnalysis | None = None
 
 
 def event_record_id(data: dict[str, object]) -> int:
@@ -87,6 +90,14 @@ class SysmonWatch:
                 for detection in detections:
                     self.storage.store_detection(detection)
             correlation = correlate(event, detections, self.storage) if self.storage is not None else None
-            processed.append(ProcessedEvent(record_id, event, detections, correlation))
+            analysis = None
+            if self.storage is not None and correlation and correlation.incident:
+                detail = self.storage.get_incident_detail(correlation.incident.incident_id)
+                if detail is None:
+                    raise RuntimeError("correlated incident detail could not be loaded")
+                analysis = self.storage.store_analysis(
+                    analyze_incident(detail.incident, detail.events, detail.detections)
+                )
+            processed.append(ProcessedEvent(record_id, event, detections, correlation, analysis))
             self.checkpoint = record_id
         return processed
