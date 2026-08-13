@@ -174,14 +174,21 @@ class SQLiteStorageTests(unittest.TestCase):
             INSERT INTO events VALUES ('legacy', 1, '2026-01-01T00:00:00Z', 'sysmon',
                 'process_creation', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'null',
                 '2026-01-01T00:00:00Z');
+            INSERT INTO detections VALUES ('legacy-det', 'legacy', 'LEGACY-001', 'Legacy',
+                'high', 80, 'Existing detection', '[]', '{}', '2026-01-01T00:00:00Z');
         """)
         connection.commit()
         connection.close()
 
         with SQLiteStorage(legacy) as upgraded:
             self.assertEqual(upgraded.get_event("legacy").event_id, "legacy")
+            self.assertEqual(upgraded.get_detection("legacy-det").detection_id, "legacy-det")
             columns = {row[1] for row in upgraded._connection.execute("PRAGMA table_info(events)")}
+            tables = {row[0] for row in upgraded._connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )}
         self.assertTrue({"process_guid", "source_port", "destination_hostname"} <= columns)
+        self.assertTrue({"incidents", "incident_events", "incident_detections"} <= tables)
 
 
 if __name__ == "__main__":

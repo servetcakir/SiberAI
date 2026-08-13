@@ -11,8 +11,11 @@ from engine.api.schemas import (
     EventDetailResponse,
     EventResponse,
     HealthResponse,
+    IncidentDetailResponse,
+    IncidentResponse,
 )
 from engine.storage.sqlite import SQLiteStorage, StorageError
+from engine.models.incident import Incident
 
 
 logger = logging.getLogger(__name__)
@@ -26,6 +29,23 @@ def _database_path() -> str:
 def get_storage() -> Iterator[SQLiteStorage]:
     with SQLiteStorage(_database_path()) as storage:
         yield storage
+
+
+def _incident_response(incident: Incident) -> IncidentResponse:
+    return IncidentResponse(
+        incident_id=incident.incident_id,
+        title=incident.title,
+        status=incident.status,
+        severity=incident.severity,
+        risk_score=incident.risk_score,
+        host=incident.host,
+        process_guid=incident.process_guid,
+        primary_event_id=incident.primary_event_id,
+        created_at=incident.created_at,
+        updated_at=incident.updated_at,
+        event_count=len(incident.event_ids),
+        detection_count=len(incident.detection_ids),
+    )
 
 
 def create_app() -> FastAPI:
@@ -86,6 +106,27 @@ def create_app() -> FastAPI:
         if detection is None:
             raise HTTPException(status_code=404, detail="Detection not found")
         return DetectionResponse.model_validate(detection)
+
+    @application.get("/api/incidents", response_model=list[IncidentResponse])
+    def incidents(
+        limit: int = Query(default=50, ge=1, le=200),
+        storage: SQLiteStorage = Depends(get_storage),
+    ) -> list[IncidentResponse]:
+        return [_incident_response(item) for item in storage.recent_incidents(limit)]
+
+    @application.get("/api/incidents/{incident_id}", response_model=IncidentDetailResponse)
+    def incident_detail(
+        incident_id: str,
+        storage: SQLiteStorage = Depends(get_storage),
+    ) -> IncidentDetailResponse:
+        detail = storage.get_incident_detail(incident_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Incident not found")
+        return IncidentDetailResponse(
+            **_incident_response(detail.incident).model_dump(),
+            events=[EventResponse.model_validate(item) for item in detail.events],
+            detections=[DetectionResponse.model_validate(item) for item in detail.detections],
+        )
 
     return application
 

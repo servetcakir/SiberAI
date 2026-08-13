@@ -12,6 +12,7 @@ from engine.watch import SysmonWatch, event_record_id
 from engine.ingestion.sysmon_xml import parse_process_create_xml
 from engine.storage.sqlite import SQLiteStorage
 from engine.tests.test_sysmon_network import network_xml
+from engine.storage.sqlite import StorageError
 
 
 class SysmonWatchTests(unittest.TestCase):
@@ -127,6 +128,8 @@ class SysmonWatchTests(unittest.TestCase):
             self.assertEqual(len(storage.recent_events()), 1)
             self.assertEqual(storage.recent_events()[0].record_id, 101)
             self.assertEqual(storage.recent_detections()[0].rule_id, "DET-PS-001")
+            self.assertEqual(len(storage.recent_incidents()), 1)
+            self.assertTrue(results[0].correlation.created)
 
     def test_watch_persists_ordinary_event_without_detection(self) -> None:
         ordinary = sysmon_xml(record_id=101, command_line="powershell.exe -NoProfile Get-Process")
@@ -143,6 +146,19 @@ class SysmonWatchTests(unittest.TestCase):
             self.assertEqual(len(results), 1)
             self.assertEqual(len(storage.recent_events()), 1)
             self.assertEqual(storage.recent_detections(), [])
+
+    def test_correlation_failure_does_not_advance_checkpoint(self) -> None:
+        with TemporaryDirectory() as directory, SQLiteStorage(Path(directory) / "watch.db") as storage:
+            watch = SysmonWatch(
+                recent_collector=lambda **kwargs: [sysmon_xml(record_id=100)],
+                newer_collector=lambda *args, **kwargs: [sysmon_xml(record_id=101)],
+                storage=storage,
+            )
+            watch.establish_baseline()
+            with patch("engine.watch.correlate", side_effect=StorageError("correlation failed")):
+                with self.assertRaisesRegex(StorageError, "correlation failed"):
+                    watch.poll()
+            self.assertEqual(watch.checkpoint, 100)
 
 
 if __name__ == "__main__":

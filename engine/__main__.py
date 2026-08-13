@@ -67,6 +67,20 @@ def run_watch(interval: float, *, monitor: SysmonWatch | None = None) -> tuple[i
                 for result in watch.poll():
                     processed_count += 1
                     detection_count += _print_event(result.event, result.detections)
+                    if result.correlation and result.correlation.incident:
+                        incident = result.correlation.incident
+                        if result.correlation.created:
+                            print(f"[INCIDENT] {incident.title}")
+                            print(f"ID: {incident.incident_id}")
+                            print(f"Severity: {incident.severity.value.upper()}")
+                            print(f"Risk: {incident.risk_score}/100")
+                            print(f"Events: {len(incident.event_ids)}")
+                        elif result.correlation.event_attached:
+                            kind = "NETWORK" if result.event.category == "network_connection" else "PROCESS"
+                            print(
+                                f"[CORRELATED] {kind} | {result.event.process or 'unknown process'} | "
+                                f"attached to {incident.incident_id}"
+                            )
             except (ValueError, SysmonXmlError, WindowsEventLogError, StorageError) as error:
                 print(f"SiberAI watch error: {error}")
             time.sleep(interval)

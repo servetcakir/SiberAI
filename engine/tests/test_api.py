@@ -14,6 +14,7 @@ from engine.tests.test_sysmon_xml import sysmon_xml
 from engine.ingestion.sysmon import normalize_sysmon_event
 from engine.ingestion.sysmon_xml import parse_sysmon_xml
 from engine.tests.test_sysmon_network import network_xml
+from engine.correlation.engine import correlate
 
 
 class ApiTests(unittest.TestCase):
@@ -125,6 +126,37 @@ class ApiTests(unittest.TestCase):
 
     def test_detection_detail_returns_404(self) -> None:
         self.assertEqual(self.client.get("/api/detections/missing").status_code, 404)
+
+    def create_incident(self) -> str:
+        event = normalize_process_create(parse_process_create_xml(sysmon_xml(record_id=8421)))
+        detection = detect(event)[0]
+        with SQLiteStorage(self.database) as storage:
+            result = correlate(event, [detection], storage)
+        return result.incident.incident_id
+
+    def test_incident_list_endpoint(self) -> None:
+        incident_id = self.create_incident()
+        response = self.client.get("/api/incidents?limit=10")
+        self.assertEqual(response.status_code, 200)
+        incident = response.json()[0]
+        self.assertEqual(incident["incident_id"], incident_id)
+        self.assertEqual(incident["event_count"], 2)
+        self.assertEqual(incident["detection_count"], 1)
+
+    def test_incident_detail_endpoint(self) -> None:
+        incident_id = self.create_incident()
+        response = self.client.get(f"/api/incidents/{incident_id}")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["severity"], "high")
+        self.assertEqual(body["events"][0]["event_id"], self.event_id)
+        self.assertEqual(body["detections"][0]["rule_id"], "DET-PS-001")
+        self.assertNotIn("raw", body["events"][0])
+
+    def test_unknown_incident_returns_404(self) -> None:
+        response = self.client.get("/api/incidents/missing")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json(), {"detail": "Incident not found"})
 
     def test_database_failure_does_not_leak_path(self) -> None:
         secret_path = r"C:\secret\private\siberai.db"

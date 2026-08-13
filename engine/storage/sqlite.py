@@ -7,6 +7,7 @@ from typing import Any
 
 from engine.models.detection import Detection, Severity
 from engine.models.event import SecurityEvent
+from engine.models.incident import Incident, IncidentStatus
 
 
 class StorageError(RuntimeError):
@@ -54,6 +55,13 @@ class StoredDetection:
     event_timestamp: datetime | None = None
     host: str | None = None
     process: str | None = None
+
+
+@dataclass(slots=True)
+class IncidentDetail:
+    incident: Incident
+    events: list[StoredEvent]
+    detections: list[StoredDetection]
 
 
 class SQLiteStorage:
@@ -114,6 +122,35 @@ class SQLiteStorage:
         CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp DESC);
         CREATE INDEX IF NOT EXISTS idx_detections_created_at ON detections(created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_detections_event_id ON detections(event_id);
+        CREATE TABLE IF NOT EXISTS incidents (
+            incident_id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            risk_score INTEGER NOT NULL CHECK (risk_score BETWEEN 0 AND 100),
+            host TEXT,
+            process_guid TEXT,
+            primary_event_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (primary_event_id) REFERENCES events(event_id)
+        );
+        CREATE TABLE IF NOT EXISTS incident_events (
+            incident_id TEXT NOT NULL,
+            event_id TEXT NOT NULL,
+            PRIMARY KEY (incident_id, event_id),
+            FOREIGN KEY (incident_id) REFERENCES incidents(incident_id),
+            FOREIGN KEY (event_id) REFERENCES events(event_id)
+        );
+        CREATE TABLE IF NOT EXISTS incident_detections (
+            incident_id TEXT NOT NULL,
+            detection_id TEXT NOT NULL,
+            PRIMARY KEY (incident_id, detection_id),
+            FOREIGN KEY (incident_id) REFERENCES incidents(incident_id),
+            FOREIGN KEY (detection_id) REFERENCES detections(detection_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_incidents_updated_at ON incidents(updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_incidents_process_guid ON incidents(process_guid, status);
         """
         try:
             self._connection.executescript(schema)
@@ -218,6 +255,125 @@ class SQLiteStorage:
             (detection_id,),
         )
         return _stored_detection(rows[0]) if rows else None
+
+    def store_incident(self, incident: Incident) -> bool:
+        return self._insert(
+            """INSERT OR IGNORE INTO incidents (
+                incident_id, title, status, severity, risk_score, host, process_guid,
+                primary_event_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                incident.incident_id, incident.title, incident.status.value,
+                incident.severity.value, incident.risk_score, incident.host,
+                incident.process_guid, incident.primary_event_id,
+                _utc_text(incident.created_at), _utc_text(incident.updated_at),
+            ),
+            "incident",
+        )
+
+    def attach_incident_event(self, incident_id: str, event_id: str) -> bool:
+        return self._insert(
+            "INSERT OR IGNORE INTO incident_events (incident_id, event_id) VALUES (?, ?)",
+            (incident_id, event_id), "incident event relationship",
+        )
+
+    def attach_incident_detection(self, incident_id: str, detection_id: str) -> bool:
+        return self._insert(
+            "INSERT OR IGNORE INTO incident_detections (incident_id, detection_id) VALUES (?, ?)",
+            (incident_id, detection_id), "incident detection relationship",
+        )
+
+    def update_incident(
+        self, incident_id: str, *, title: str, severity: Severity,
+        risk_score: int, updated_at: datetime,
+    ) -> None:
+        try:
+            cursor = self._connection.execute(
+                """UPDATE incidents SET title = ?, severity = ?, risk_score = ?, updated_at = ?
+                   WHERE incident_id = ?""",
+                (title, severity.value, risk_score, _utc_text(updated_at), incident_id),
+            )
+            if cursor.rowcount != 1:
+                raise StorageError(f"Incident not found: {incident_id}")
+            self._connection.commit()
+        except sqlite3.Error as error:
+            self._connection.rollback()
+            raise StorageError(f"Unable to update incident: {error}") from error
+
+    def recent_incidents(self, limit: int = 20) -> list[Incident]:
+        _validate_limit(limit)
+        rows = self._query("SELECT * FROM incidents ORDER BY updated_at DESC LIMIT ?", (limit,))
+        return [self._stored_incident(row) for row in rows]
+
+    def get_incident(self, incident_id: str) -> Incident | None:
+        rows = self._query("SELECT * FROM incidents WHERE incident_id = ?", (incident_id,))
+        return self._stored_incident(rows[0]) if rows else None
+
+    def get_incident_detail(self, incident_id: str) -> IncidentDetail | None:
+        incident = self.get_incident(incident_id)
+        if incident is None:
+            return None
+        event_rows = self._query(
+            """SELECT e.* FROM events e JOIN incident_events ie ON ie.event_id = e.event_id
+               WHERE ie.incident_id = ? ORDER BY e.timestamp ASC, e.record_id ASC""",
+            (incident_id,),
+        )
+        detection_rows = self._query(
+            """SELECT d.*, e.timestamp AS event_timestamp, e.host AS host, e.process AS process
+               FROM detections d JOIN incident_detections id ON id.detection_id = d.detection_id
+               JOIN events e ON e.event_id = d.event_id
+               WHERE id.incident_id = ? ORDER BY d.created_at ASC""",
+            (incident_id,),
+        )
+        return IncidentDetail(
+            incident=incident,
+            events=[_stored_event(row) for row in event_rows],
+            detections=[_stored_detection(row) for row in detection_rows],
+        )
+
+    def find_open_incident(
+        self, process_guid: str, host: str | None, timestamp: datetime,
+        window_seconds: int,
+    ) -> Incident | None:
+        rows = self._query(
+            """SELECT i.* FROM incidents i JOIN events p ON p.event_id = i.primary_event_id
+               WHERE i.status = ? AND i.process_guid = ?
+                 AND (i.host IS NULL OR ? IS NULL OR lower(i.host) = lower(?))
+                 AND abs(strftime('%s', p.timestamp) - strftime('%s', ?)) <= ?
+               ORDER BY i.updated_at DESC LIMIT 1""",
+            (IncidentStatus.OPEN.value, process_guid, host, host, _utc_text(timestamp), window_seconds),
+        )
+        return self._stored_incident(rows[0]) if rows else None
+
+    def related_events(
+        self, process_guid: str, host: str | None, timestamp: datetime,
+        window_seconds: int, limit: int = 100,
+    ) -> list[StoredEvent]:
+        _validate_limit(limit)
+        rows = self._query(
+            """SELECT * FROM events WHERE process_guid = ?
+                 AND (host IS NULL OR ? IS NULL OR lower(host) = lower(?))
+                 AND abs(strftime('%s', timestamp) - strftime('%s', ?)) <= ?
+               ORDER BY timestamp ASC, record_id ASC LIMIT ?""",
+            (process_guid, host, host, _utc_text(timestamp), window_seconds, limit),
+        )
+        return [_stored_event(row) for row in rows]
+
+    def _stored_incident(self, row: sqlite3.Row) -> Incident:
+        event_ids = [item[0] for item in self._query(
+            "SELECT event_id FROM incident_events WHERE incident_id = ? ORDER BY event_id", (row["incident_id"],)
+        )]
+        detection_ids = [item[0] for item in self._query(
+            "SELECT detection_id FROM incident_detections WHERE incident_id = ? ORDER BY detection_id", (row["incident_id"],)
+        )]
+        return Incident(
+            incident_id=row["incident_id"], title=row["title"],
+            status=IncidentStatus(row["status"]), severity=Severity(row["severity"]),
+            risk_score=row["risk_score"], created_at=_parse_datetime(row["created_at"]),
+            updated_at=_parse_datetime(row["updated_at"]), host=row["host"],
+            process_guid=row["process_guid"], primary_event_id=row["primary_event_id"],
+            event_ids=event_ids, detection_ids=detection_ids,
+        )
 
     def _insert(self, sql: str, values: tuple[object, ...], label: str) -> bool:
         try:

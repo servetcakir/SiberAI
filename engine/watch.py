@@ -2,6 +2,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from engine.detection.engine import detect
+from engine.correlation.engine import CorrelationResult, correlate
 from engine.ingestion.sysmon import normalize_sysmon_event
 from engine.ingestion.sysmon_xml import parse_sysmon_xml
 from engine.ingestion.windows_event_log import (
@@ -21,6 +22,7 @@ class ProcessedEvent:
     record_id: int
     event: SecurityEvent
     detections: list[Detection]
+    correlation: CorrelationResult | None = None
 
 
 def event_record_id(data: dict[str, object]) -> int:
@@ -84,6 +86,7 @@ class SysmonWatch:
             if self.storage is not None:
                 for detection in detections:
                     self.storage.store_detection(detection)
-            processed.append(ProcessedEvent(record_id, event, detections))
+            correlation = correlate(event, detections, self.storage) if self.storage is not None else None
+            processed.append(ProcessedEvent(record_id, event, detections, correlation))
             self.checkpoint = record_id
         return processed

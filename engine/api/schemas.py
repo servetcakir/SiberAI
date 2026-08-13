@@ -4,6 +4,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from engine.models.detection import Severity
+from engine.models.incident import IncidentStatus
 
 
 class ApiModel(BaseModel):
@@ -57,4 +58,24 @@ class DetectionResponse(ApiModel):
 
 class EventDetailResponse(EventResponse):
     raw: dict[str, Any] | None
+    detections: list[DetectionResponse]
+
+
+class IncidentResponse(ApiModel):
+    incident_id: str
+    title: str
+    status: IncidentStatus
+    severity: Severity
+    risk_score: int = Field(ge=0, le=100)
+    host: str | None
+    process_guid: str | None
+    primary_event_id: str
+    created_at: datetime
+    updated_at: datetime
+    event_count: int
+    detection_count: int
+
+
+class IncidentDetailResponse(IncidentResponse):
+    events: list[EventResponse]
     detections: list[DetectionResponse]
