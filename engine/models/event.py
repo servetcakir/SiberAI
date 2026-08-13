@@ -18,4 +18,12 @@ class SecurityEvent:
     command_line: str | None = None
     source_ip: str | None = None
     destination_ip: str | None = None
+    process_guid: str | None = None
+    process_id: int | None = None
+    source_port: int | None = None
+    destination_port: int | None = None
+    protocol: str | None = None
+    initiated: bool | None = None
+    source_hostname: str | None = None
+    destination_hostname: str | None = None
     raw: dict[str, Any] | None = None

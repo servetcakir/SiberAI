@@ -10,8 +10,8 @@ class SysmonXmlError(ValueError):
     """Raised when Sysmon event XML cannot be parsed or validated."""
 
 
-def parse_process_create_xml(xml: str) -> dict[str, Any]:
-    """Parse one Sysmon Event ID 1 XML document into normalizer input."""
+def parse_sysmon_xml(xml: str) -> dict[str, Any]:
+    """Parse one supported Sysmon Event ID 1 or 3 XML document."""
 
     try:
         root = ElementTree.fromstring(xml)
@@ -27,8 +27,8 @@ def parse_process_create_xml(xml: str) -> dict[str, Any]:
 
     event_id_element = system.find("event:EventID", _NS)
     event_id = (event_id_element.text or "").strip() if event_id_element is not None else ""
-    if event_id != "1":
-        raise SysmonXmlError(f"Expected Sysmon Event ID 1, received {event_id or 'missing'}")
+    if event_id not in {"1", "3"}:
+        raise SysmonXmlError(f"Expected Sysmon Event ID 1 or 3, received {event_id or 'missing'}")
 
     provider = system.find("event:Provider", _NS)
     provider_name = provider.get("Name") if provider is not None else None
@@ -54,6 +54,15 @@ def parse_process_create_xml(xml: str) -> dict[str, Any]:
         "RecordID": _text(system.find("event:EventRecordID", _NS)),
         "Channel": _text(system.find("event:Channel", _NS)),
     }
+    return result
+
+
+def parse_process_create_xml(xml: str) -> dict[str, Any]:
+    """Compatibility parser that accepts only Sysmon Event ID 1."""
+
+    result = parse_sysmon_xml(xml)
+    if result["_System"]["EventID"] != "1":
+        raise SysmonXmlError(f"Expected Sysmon Event ID 1, received {result['_System']['EventID']}")
     return result
 
 

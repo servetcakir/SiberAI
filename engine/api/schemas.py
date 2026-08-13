@@ -29,6 +29,14 @@ class EventResponse(ApiModel):
     command_line: str | None
     source_ip: str | None
     destination_ip: str | None
+    process_guid: str | None
+    process_id: int | None
+    source_port: int | None
+    destination_port: int | None
+    protocol: str | None
+    initiated: bool | None
+    source_hostname: str | None
+    destination_hostname: str | None
 
 
 class DetectionResponse(ApiModel):

@@ -11,6 +11,9 @@ from engine.ingestion.sysmon_xml import parse_process_create_xml
 from engine.models.detection import Detection, Severity
 from engine.storage.sqlite import SQLiteStorage, StorageError
 from engine.tests.test_sysmon_xml import sysmon_xml
+from engine.ingestion.sysmon import normalize_sysmon_event
+from engine.ingestion.sysmon_xml import parse_sysmon_xml
+from engine.tests.test_sysmon_network import network_xml
 
 
 class SQLiteStorageTests(unittest.TestCase):
@@ -139,6 +142,46 @@ class SQLiteStorageTests(unittest.TestCase):
         self.assertEqual(stored_detection.process, "powershell.exe")
         self.assertIsNone(self.storage.get_event("missing"))
         self.assertIsNone(self.storage.get_detection("missing"))
+
+    def test_network_event_round_trip(self) -> None:
+        event = normalize_sysmon_event(parse_sysmon_xml(network_xml(record_id=9100)))
+        self.assertTrue(self.storage.store_event(event))
+        stored = self.storage.get_event(event.event_id)
+        self.assertEqual(stored.process_guid, "{NET-PROCESS-GUID}")
+        self.assertEqual(stored.process_id, 4120)
+        self.assertEqual(stored.source_port, 54321)
+        self.assertEqual(stored.destination_port, 443)
+        self.assertEqual(stored.protocol, "tcp")
+        self.assertIs(stored.initiated, True)
+        self.assertEqual(stored.destination_hostname, "example.net")
+
+    def test_existing_database_is_upgraded_without_deletion(self) -> None:
+        legacy = Path(self.temporary_directory.name) / "legacy.db"
+        connection = sqlite3.connect(legacy)
+        connection.executescript("""
+            CREATE TABLE events (
+                event_id TEXT PRIMARY KEY, record_id INTEGER, timestamp TEXT NOT NULL,
+                source_type TEXT NOT NULL, category TEXT NOT NULL, host TEXT, user TEXT,
+                process TEXT, parent_process TEXT, command_line TEXT, source_ip TEXT,
+                destination_ip TEXT, raw_json TEXT, created_at TEXT NOT NULL
+            );
+            CREATE TABLE detections (
+                detection_id TEXT PRIMARY KEY, event_id TEXT NOT NULL, rule_id TEXT NOT NULL,
+                title TEXT NOT NULL, severity TEXT NOT NULL, risk_score INTEGER NOT NULL,
+                description TEXT NOT NULL, mitre_json TEXT NOT NULL, evidence_json TEXT NOT NULL,
+                created_at TEXT NOT NULL, FOREIGN KEY (event_id) REFERENCES events(event_id)
+            );
+            INSERT INTO events VALUES ('legacy', 1, '2026-01-01T00:00:00Z', 'sysmon',
+                'process_creation', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'null',
+                '2026-01-01T00:00:00Z');
+        """)
+        connection.commit()
+        connection.close()
+
+        with SQLiteStorage(legacy) as upgraded:
+            self.assertEqual(upgraded.get_event("legacy").event_id, "legacy")
+            columns = {row[1] for row in upgraded._connection.execute("PRAGMA table_info(events)")}
+        self.assertTrue({"process_guid", "source_port", "destination_hostname"} <= columns)
 
 
 if __name__ == "__main__":

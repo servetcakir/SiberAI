@@ -35,6 +35,8 @@ class SysmonNormalizerTests(unittest.TestCase):
         self.assertEqual(event.host, "WS-FIN-042.siberai.local")
         self.assertEqual(event.user, r"SIBERAI\analyst")
         self.assertEqual(event.command_line, source["CommandLine"])
+        self.assertEqual(event.process_guid, source["ProcessGuid"])
+        self.assertEqual(event.process_id, 6420)
         self.assertEqual(event.raw, source)
         self.assertIsNot(event.raw, source)
 

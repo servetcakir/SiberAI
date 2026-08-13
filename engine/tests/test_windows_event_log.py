@@ -7,6 +7,8 @@ from engine.ingestion.windows_event_log import (
     WindowsEventLogError,
     collect_recent_sysmon_process_events,
     collect_sysmon_process_events_after,
+    collect_recent_sysmon_events,
+    collect_sysmon_events_after,
     split_event_xml,
 )
 from engine.tests.test_sysmon_xml import sysmon_xml
@@ -74,6 +76,26 @@ class WindowsEventLogTests(unittest.TestCase):
         self.assertIn("/c:50", command)
         self.assertIn("/rd:false", command)
         self.assertIs(run_mock.call_args.kwargs["shell"], False)
+
+    @patch("engine.ingestion.windows_event_log.os.name", "nt")
+    @patch("engine.ingestion.windows_event_log.subprocess.run")
+    def test_supported_collector_queries_event_ids_one_and_three(self, run_mock) -> None:
+        run_mock.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        collect_recent_sysmon_events(limit=8)
+        command = run_mock.call_args.args[0]
+        self.assertIn("/q:*[System[(EventID=1 or EventID=3)]]", command)
+        self.assertIn("/c:8", command)
+        self.assertIs(run_mock.call_args.kwargs["shell"], False)
+
+    @patch("engine.ingestion.windows_event_log.os.name", "nt")
+    @patch("engine.ingestion.windows_event_log.subprocess.run")
+    def test_supported_newer_query_uses_one_global_channel_checkpoint(self, run_mock) -> None:
+        run_mock.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        collect_sysmon_events_after(9000, limit=50)
+        command = run_mock.call_args.args[0]
+        self.assertIn("EventID=1 or EventID=3", command[3])
+        self.assertIn("EventRecordID>9000", command[3])
+        self.assertIn("/rd:false", command)
 
     @patch("engine.ingestion.windows_event_log.os.name", "posix")
     def test_non_windows_collection_fails_clearly(self) -> None:

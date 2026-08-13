@@ -2,11 +2,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from engine.detection.engine import detect
-from engine.ingestion.sysmon import normalize_process_create
-from engine.ingestion.sysmon_xml import parse_process_create_xml
+from engine.ingestion.sysmon import normalize_sysmon_event
+from engine.ingestion.sysmon_xml import parse_sysmon_xml
 from engine.ingestion.windows_event_log import (
-    collect_recent_sysmon_process_events,
-    collect_sysmon_process_events_after,
+    collect_recent_sysmon_events,
+    collect_sysmon_events_after,
 )
 from engine.models.detection import Detection
 from engine.models.event import SecurityEvent
@@ -38,13 +38,13 @@ def event_record_id(data: dict[str, object]) -> int:
 
 
 class SysmonWatch:
-    """In-memory checkpoint monitor for new Sysmon process-create events."""
+    """In-memory channel checkpoint monitor for supported Sysmon events."""
 
     def __init__(
         self,
         *,
-        recent_collector: XmlCollector = collect_recent_sysmon_process_events,
-        newer_collector: XmlCollector = collect_sysmon_process_events_after,
+        recent_collector: XmlCollector = collect_recent_sysmon_events,
+        newer_collector: XmlCollector = collect_sysmon_events_after,
         batch_size: int = 50,
         storage: SQLiteStorage | None = None,
     ) -> None:
@@ -59,7 +59,7 @@ class SysmonWatch:
     def establish_baseline(self) -> int:
         xml_events = self._recent_collector(limit=1)
         self.checkpoint = max(
-            (event_record_id(parse_process_create_xml(xml)) for xml in xml_events),
+            (event_record_id(parse_sysmon_xml(xml)) for xml in xml_events),
             default=0,
         )
         return self.checkpoint
@@ -68,7 +68,7 @@ class SysmonWatch:
         if self.checkpoint is None:
             raise RuntimeError("watch baseline has not been established")
 
-        parsed = [parse_process_create_xml(xml) for xml in self._newer_collector(self.checkpoint, limit=self.batch_size)]
+        parsed = [parse_sysmon_xml(xml) for xml in self._newer_collector(self.checkpoint, limit=self.batch_size)]
         ordered = sorted(
             ((event_record_id(data), data) for data in parsed),
             key=lambda item: item[0],
@@ -77,7 +77,7 @@ class SysmonWatch:
         for record_id, data in ordered:
             if record_id <= self.checkpoint:
                 continue
-            event = normalize_process_create(data)
+            event = normalize_sysmon_event(data)
             if self.storage is not None:
                 self.storage.store_event(event, record_id)
             detections = detect(event)

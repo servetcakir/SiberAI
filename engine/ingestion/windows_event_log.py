@@ -6,6 +6,7 @@ from engine.ingestion.sysmon_xml import EVENT_NAMESPACE
 
 
 SYSMON_CHANNEL = "Microsoft-Windows-Sysmon/Operational"
+SUPPORTED_EVENT_QUERY = "(EventID=1 or EventID=3)"
 _EVENT_TAG = f"{{{EVENT_NAMESPACE}}}Event"
 
 
@@ -83,6 +84,12 @@ def collect_recent_sysmon_process_events(limit: int = 10) -> list[str]:
     return _run_query("*[System[(EventID=1)]]", limit, newest_first=True)
 
 
+def collect_recent_sysmon_events(limit: int = 10) -> list[str]:
+    """Read recent supported Sysmon records from their shared channel."""
+
+    return _run_query(f"*[System[{SUPPORTED_EVENT_QUERY}]]", limit, newest_first=True)
+
+
 def collect_sysmon_process_events_after(
     record_id: int,
     limit: int = 50,
@@ -92,4 +99,13 @@ def collect_sysmon_process_events_after(
     if isinstance(record_id, bool) or not isinstance(record_id, int) or record_id < 0:
         raise ValueError("record_id must be a non-negative integer")
     query = f"*[System[(EventID=1) and (EventRecordID>{record_id})]]"
+    return _run_query(query, limit, newest_first=False)
+
+
+def collect_sysmon_events_after(record_id: int, limit: int = 50) -> list[str]:
+    """Read a bounded oldest-first batch of supported records after a checkpoint."""
+
+    if isinstance(record_id, bool) or not isinstance(record_id, int) or record_id < 0:
+        raise ValueError("record_id must be a non-negative integer")
+    query = f"*[System[({SUPPORTED_EVENT_QUERY}) and (EventRecordID>{record_id})]]"
     return _run_query(query, limit, newest_first=False)

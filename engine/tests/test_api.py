@@ -11,6 +11,9 @@ from engine.ingestion.sysmon import normalize_process_create
 from engine.ingestion.sysmon_xml import parse_process_create_xml
 from engine.storage.sqlite import SQLiteStorage, StorageError
 from engine.tests.test_sysmon_xml import sysmon_xml
+from engine.ingestion.sysmon import normalize_sysmon_event
+from engine.ingestion.sysmon_xml import parse_sysmon_xml
+from engine.tests.test_sysmon_network import network_xml
 
 
 class ApiTests(unittest.TestCase):
@@ -82,6 +85,26 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json(), {"detail": "Security event not found"})
+
+    def test_event_list_represents_network_event(self) -> None:
+        network = normalize_sysmon_event(parse_sysmon_xml(network_xml(record_id=8423)))
+        with SQLiteStorage(self.database) as storage:
+            storage.store_event(network, 8423)
+        event = self.client.get("/api/events?limit=1").json()[0]
+        self.assertEqual(event["category"], "network_connection")
+        self.assertEqual(event["source_port"], 54321)
+        self.assertEqual(event["destination_port"], 443)
+        self.assertEqual(event["protocol"], "tcp")
+
+    def test_event_detail_represents_network_event(self) -> None:
+        network = normalize_sysmon_event(parse_sysmon_xml(network_xml(record_id=8423)))
+        with SQLiteStorage(self.database) as storage:
+            storage.store_event(network, 8423)
+        event = self.client.get(f"/api/events/{network.event_id}").json()
+        self.assertEqual(event["process_guid"], "{NET-PROCESS-GUID}")
+        self.assertEqual(event["source_ip"], "192.168.1.25")
+        self.assertIs(event["initiated"], True)
+        self.assertEqual(event["detections"], [])
 
     def test_detection_list_includes_event_context(self) -> None:
         response = self.client.get("/api/detections?limit=10")

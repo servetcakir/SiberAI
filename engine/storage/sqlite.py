@@ -27,6 +27,14 @@ class StoredEvent:
     command_line: str | None
     source_ip: str | None
     destination_ip: str | None
+    process_guid: str | None
+    process_id: int | None
+    source_port: int | None
+    destination_port: int | None
+    protocol: str | None
+    initiated: bool | None
+    source_hostname: str | None
+    destination_hostname: str | None
     raw: dict[str, Any] | None
     created_at: datetime
 
@@ -109,9 +117,26 @@ class SQLiteStorage:
         """
         try:
             self._connection.executescript(schema)
+            self._upgrade_events_schema()
             self._connection.commit()
         except sqlite3.Error as error:
             raise StorageError(f"Unable to initialize SQLite schema: {error}") from error
+
+    def _upgrade_events_schema(self) -> None:
+        existing = {row[1] for row in self._connection.execute("PRAGMA table_info(events)")}
+        additions = {
+            "process_guid": "TEXT",
+            "process_id": "INTEGER",
+            "source_port": "INTEGER",
+            "destination_port": "INTEGER",
+            "protocol": "TEXT",
+            "initiated": "INTEGER",
+            "source_hostname": "TEXT",
+            "destination_hostname": "TEXT",
+        }
+        for column, column_type in additions.items():
+            if column not in existing:
+                self._connection.execute(f"ALTER TABLE events ADD COLUMN {column} {column_type}")
 
     def store_event(self, event: SecurityEvent, record_id: int | None = None) -> bool:
         created_at = _utc_now_text()
@@ -121,14 +146,19 @@ class SQLiteStorage:
             event.event_id, record_id, _utc_text(event.timestamp), event.source_type,
             event.category, event.host, event.user, event.process, event.parent_process,
             event.command_line, event.source_ip, event.destination_ip,
+            event.process_guid, event.process_id, event.source_port,
+            event.destination_port, event.protocol,
+            int(event.initiated) if event.initiated is not None else None,
+            event.source_hostname, event.destination_hostname,
             json.dumps(event.raw, sort_keys=True), created_at,
         )
         return self._insert(
             """INSERT OR IGNORE INTO events (
                 event_id, record_id, timestamp, source_type, category, host, user,
                 process, parent_process, command_line, source_ip, destination_ip,
-                raw_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                process_guid, process_id, source_port, destination_port, protocol,
+                initiated, source_hostname, destination_hostname, raw_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             values,
             "event",
         )
@@ -240,7 +270,12 @@ def _stored_event(row: sqlite3.Row) -> StoredEvent:
         category=row["category"], host=row["host"], user=row["user"],
         process=row["process"], parent_process=row["parent_process"],
         command_line=row["command_line"], source_ip=row["source_ip"],
-        destination_ip=row["destination_ip"], raw=json.loads(row["raw_json"]),
+        destination_ip=row["destination_ip"], process_guid=row["process_guid"],
+        process_id=row["process_id"], source_port=row["source_port"],
+        destination_port=row["destination_port"], protocol=row["protocol"],
+        initiated=bool(row["initiated"]) if row["initiated"] is not None else None,
+        source_hostname=row["source_hostname"], destination_hostname=row["destination_hostname"],
+        raw=json.loads(row["raw_json"]),
         created_at=_parse_datetime(row["created_at"]),
     )
 

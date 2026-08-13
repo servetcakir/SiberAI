@@ -29,6 +29,14 @@ export interface ApiSecurityEvent {
   command_line: string | null;
   source_ip: string | null;
   destination_ip: string | null;
+  process_guid: string | null;
+  process_id: number | null;
+  source_port: number | null;
+  destination_port: number | null;
+  protocol: string | null;
+  initiated: boolean | null;
+  source_hostname: string | null;
+  destination_hostname: string | null;
 }
 
 export interface ApiSecurityEventDetail extends ApiSecurityEvent {

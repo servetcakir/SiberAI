@@ -2,12 +2,12 @@ import argparse
 import time
 
 from engine.detection.engine import detect
-from engine.ingestion.sysmon import normalize_process_create
-from engine.ingestion.sysmon_xml import SysmonXmlError, parse_process_create_xml
+from engine.ingestion.sysmon import normalize_sysmon_event
+from engine.ingestion.sysmon_xml import SysmonXmlError, parse_sysmon_xml
 from engine.ingestion.windows_event_log import (
     SYSMON_CHANNEL,
     WindowsEventLogError,
-    collect_recent_sysmon_process_events,
+    collect_recent_sysmon_events as collect_recent_sysmon_process_events,
 )
 from engine.models.detection import Detection
 from engine.models.event import SecurityEvent
@@ -27,7 +27,12 @@ def _positive_interval(value: str) -> float:
 
 def _print_event(event: SecurityEvent, detections: list[Detection]) -> int:
     if not detections:
-        print(f"[OK] {event.host or 'unknown host'} | {event.process or 'unknown process'}")
+        if event.category == "network_connection":
+            source = _network_endpoint(event.source_ip, event.source_port)
+            destination = _network_endpoint(event.destination_ip, event.destination_port)
+            print(f"[OK] {event.host or 'unknown host'} | NETWORK | {event.process or 'unknown process'} | {source} -> {destination}")
+        else:
+            print(f"[OK] {event.host or 'unknown host'} | PROCESS | {event.process or 'unknown process'}")
         return 0
 
     for detection in detections:
@@ -41,6 +46,10 @@ def _print_event(event: SecurityEvent, detections: list[Detection]) -> int:
     return len(detections)
 
 
+def _network_endpoint(address: str | None, port: int | None) -> str:
+    return f"{address or 'unknown'}:{port}" if port is not None else address or "unknown"
+
+
 def run_watch(interval: float, *, monitor: SysmonWatch | None = None) -> tuple[int, int]:
     watch = monitor or SysmonWatch()
     watch.establish_baseline()
@@ -48,7 +57,7 @@ def run_watch(interval: float, *, monitor: SysmonWatch | None = None) -> tuple[i
     detection_count = 0
     print("SiberAI Engine")
     print(f"Monitoring: {SYSMON_CHANNEL}")
-    print("Event type: Process Create (1)")
+    print("Event types: Process Create (1), Network Connection (3)")
     print("Status: watching for new events...")
     print("Press Ctrl+C to stop.")
 
@@ -67,9 +76,9 @@ def run_watch(interval: float, *, monitor: SysmonWatch | None = None) -> tuple[i
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run SiberAI against recent local Sysmon process events.")
+    parser = argparse.ArgumentParser(description="Run SiberAI against recent supported local Sysmon events.")
     parser.add_argument("--count", type=int, default=10, help="Recent events to inspect (1-100; default: 10)")
-    parser.add_argument("--watch", action="store_true", help="Watch for new Sysmon process events")
+    parser.add_argument("--watch", action="store_true", help="Watch for new supported Sysmon events")
     parser.add_argument("--interval", type=_positive_interval, default=1.0, help="Watch polling interval in seconds (default: 1)")
     parser.add_argument("--recent", action="store_true", help="Show recent persisted detections")
     parser.add_argument("--database", default="data/siberai.db", help="SQLite database path (default: data/siberai.db)")
@@ -107,14 +116,14 @@ def main() -> int:
         parser.exit(1, f"SiberAI collector error: {error}\n")
 
     if not xml_events:
-        print("No recent Sysmon Event ID 1 records found.")
+        print("No recent Sysmon Event ID 1 or 3 records found.")
         return 0
 
     detection_count = 0
     processed_count = 0
     for xml in xml_events:
         try:
-            event = normalize_process_create(parse_process_create_xml(xml))
+            event = normalize_sysmon_event(parse_sysmon_xml(xml))
         except (ValueError, SysmonXmlError) as error:
             print(f"Skipped invalid Sysmon event: {error}")
             continue

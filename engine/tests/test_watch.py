@@ -11,6 +11,7 @@ from engine.tests.test_sysmon_xml import sysmon_xml
 from engine.watch import SysmonWatch, event_record_id
 from engine.ingestion.sysmon_xml import parse_process_create_xml
 from engine.storage.sqlite import SQLiteStorage
+from engine.tests.test_sysmon_network import network_xml
 
 
 class SysmonWatchTests(unittest.TestCase):
@@ -55,6 +56,23 @@ class SysmonWatchTests(unittest.TestCase):
         self.assertEqual(third, [])
         self.assertEqual(checkpoints, [100, 103, 104])
         self.assertEqual(watch.checkpoint, 104)
+
+    def test_interleaved_supported_events_share_ordered_checkpoint(self) -> None:
+        watch = SysmonWatch(
+            recent_collector=lambda **kwargs: [network_xml(record_id=100)],
+            newer_collector=lambda *args, **kwargs: [
+                network_xml(record_id=103),
+                sysmon_xml(record_id=101),
+                network_xml(record_id=102),
+            ],
+        )
+        watch.establish_baseline()
+        results = watch.poll()
+        self.assertEqual([item.record_id for item in results], [101, 102, 103])
+        self.assertEqual([item.event.category for item in results], [
+            "process_creation", "network_connection", "network_connection"
+        ])
+        self.assertEqual(watch.checkpoint, 103)
 
     def test_no_new_events_produce_no_results_or_detections(self) -> None:
         watch = SysmonWatch(

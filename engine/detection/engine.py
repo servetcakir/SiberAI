@@ -29,4 +29,6 @@ RULES: tuple[Rule, ...] = (
 def detect(event: SecurityEvent) -> list[Detection]:
     """Evaluate every registered rule against one normalized event."""
 
+    if event.category not in {"process_creation", "process_execution"}:
+        return []
     return [detection for rule in RULES if (detection := rule(event)) is not None]
