@@ -127,6 +127,19 @@ class SQLiteStorageTests(unittest.TestCase):
         self.assertEqual(self.storage.detections_for_event(event.event_id)[0].detection_id, detection.detection_id)
         self.assertEqual(self.storage.detections_for_event("missing"), [])
 
+    def test_single_event_and_detection_lookups(self) -> None:
+        event = self.make_event()
+        detection = detect(event)[0]
+        self.storage.store_event(event)
+        self.storage.store_detection(detection)
+
+        self.assertEqual(self.storage.get_event(event.event_id).event_id, event.event_id)
+        stored_detection = self.storage.get_detection(detection.detection_id)
+        self.assertEqual(stored_detection.detection_id, detection.detection_id)
+        self.assertEqual(stored_detection.process, "powershell.exe")
+        self.assertIsNone(self.storage.get_event("missing"))
+        self.assertIsNone(self.storage.get_detection("missing"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -45,6 +45,7 @@ class StoredDetection:
     created_at: datetime
     event_timestamp: datetime | None = None
     host: str | None = None
+    process: str | None = None
 
 
 class SQLiteStorage:
@@ -150,13 +151,20 @@ class SQLiteStorage:
 
     def recent_events(self, limit: int = 20) -> list[StoredEvent]:
         _validate_limit(limit)
-        rows = self._query("SELECT * FROM events ORDER BY timestamp DESC LIMIT ?", (limit,))
+        rows = self._query(
+            "SELECT * FROM events ORDER BY timestamp DESC, record_id DESC LIMIT ?",
+            (limit,),
+        )
         return [_stored_event(row) for row in rows]
+
+    def get_event(self, event_id: str) -> StoredEvent | None:
+        rows = self._query("SELECT * FROM events WHERE event_id = ?", (event_id,))
+        return _stored_event(rows[0]) if rows else None
 
     def recent_detections(self, limit: int = 20) -> list[StoredDetection]:
         _validate_limit(limit)
         rows = self._query(
-            """SELECT d.*, e.timestamp AS event_timestamp, e.host AS host
+            """SELECT d.*, e.timestamp AS event_timestamp, e.host AS host, e.process AS process
                FROM detections d JOIN events e ON e.event_id = d.event_id
                ORDER BY e.timestamp DESC LIMIT ?""",
             (limit,),
@@ -165,12 +173,21 @@ class SQLiteStorage:
 
     def detections_for_event(self, event_id: str) -> list[StoredDetection]:
         rows = self._query(
-            """SELECT d.*, e.timestamp AS event_timestamp, e.host AS host
+            """SELECT d.*, e.timestamp AS event_timestamp, e.host AS host, e.process AS process
                FROM detections d JOIN events e ON e.event_id = d.event_id
                WHERE d.event_id = ? ORDER BY d.created_at DESC""",
             (event_id,),
         )
         return [_stored_detection(row) for row in rows]
+
+    def get_detection(self, detection_id: str) -> StoredDetection | None:
+        rows = self._query(
+            """SELECT d.*, e.timestamp AS event_timestamp, e.host AS host, e.process AS process
+               FROM detections d JOIN events e ON e.event_id = d.event_id
+               WHERE d.detection_id = ?""",
+            (detection_id,),
+        )
+        return _stored_detection(rows[0]) if rows else None
 
     def _insert(self, sql: str, values: tuple[object, ...], label: str) -> bool:
         try:
@@ -238,4 +255,5 @@ def _stored_detection(row: sqlite3.Row) -> StoredDetection:
         created_at=_parse_datetime(row["created_at"]),
         event_timestamp=_parse_datetime(row["event_timestamp"]) if "event_timestamp" in row.keys() else None,
         host=row["host"] if "host" in row.keys() else None,
+        process=row["process"] if "process" in row.keys() else None,
     )
