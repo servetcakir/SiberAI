@@ -1,43 +1,32 @@
-import re
+from collections.abc import Callable
 
-from engine.models.detection import Detection, Severity
+from engine.detection.rules.credentials import detect_lsass_memory_dump
+from engine.detection.rules.defense_evasion import detect_defender_impairment
+from engine.detection.rules.office import detect_office_shell
+from engine.detection.rules.persistence import detect_registry_run_key, detect_scheduled_task
+from engine.detection.rules.lolbins import detect_certutil, detect_mshta, detect_rundll32
+from engine.detection.rules.powershell import detect_encoded_command, detect_suspicious_options
+from engine.models.detection import Detection
 from engine.models.event import SecurityEvent
 
+Rule = Callable[[SecurityEvent], Detection | None]
 
-_POWERSHELL_PROCESSES = {"powershell.exe", "pwsh.exe"}
-_ENCODED_COMMAND_SWITCH = re.compile(
-    r"(?<!\w)-(?:encodedcommand|enc)(?=$|\s|:)",
-    re.IGNORECASE,
+# Explicit registration keeps rule order stable and reviewable.
+RULES: tuple[Rule, ...] = (
+    detect_encoded_command,
+    detect_suspicious_options,
+    detect_office_shell,
+    detect_certutil,
+    detect_mshta,
+    detect_rundll32,
+    detect_lsass_memory_dump,
+    detect_scheduled_task,
+    detect_registry_run_key,
+    detect_defender_impairment,
 )
 
 
 def detect(event: SecurityEvent) -> list[Detection]:
-    """Run the current detection rules against one normalized event."""
+    """Evaluate every registered rule against one normalized event."""
 
-    process = (event.process or "").casefold()
-    command_line = event.command_line or ""
-
-    if process not in _POWERSHELL_PROCESSES:
-        return []
-    if not _ENCODED_COMMAND_SWITCH.search(command_line):
-        return []
-
-    return [
-        Detection(
-            detection_id=f"DET-PS-001:{event.event_id}",
-            event_id=event.event_id,
-            rule_id="DET-PS-001",
-            title="Suspicious encoded PowerShell execution",
-            severity=Severity.HIGH,
-            risk_score=85,
-            description=(
-                "PowerShell was executed with an encoded-command switch. "
-                "The payload has not been decoded."
-            ),
-            mitre_techniques=["T1059.001"],
-            evidence={
-                "process": event.process,
-                "command_line": event.command_line,
-            },
-        )
-    ]
+    return [detection for rule in RULES if (detection := rule(event)) is not None]
