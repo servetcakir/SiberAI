@@ -3,11 +3,14 @@ import argparse
 from contextlib import redirect_stdout
 from io import StringIO
 from unittest.mock import patch
+from tempfile import TemporaryDirectory
+from pathlib import Path
 
 from engine.__main__ import _positive_interval, main, run_watch
 from engine.tests.test_sysmon_xml import sysmon_xml
 from engine.watch import SysmonWatch, event_record_id
 from engine.ingestion.sysmon_xml import parse_process_create_xml
+from engine.storage.sqlite import SQLiteStorage
 
 
 class SysmonWatchTests(unittest.TestCase):
@@ -90,6 +93,38 @@ class SysmonWatchTests(unittest.TestCase):
 
         self.assertEqual(counts, (0, 0))
         self.assertIn("Stopped. Processed 0 event(s); produced 0 detection(s).", output.getvalue())
+
+    def test_watch_persists_event_and_generated_detection(self) -> None:
+        with TemporaryDirectory() as directory, SQLiteStorage(Path(directory) / "watch.db") as storage:
+            watch = SysmonWatch(
+                recent_collector=lambda **kwargs: [sysmon_xml(record_id=100)],
+                newer_collector=lambda *args, **kwargs: [sysmon_xml(record_id=101)],
+                storage=storage,
+            )
+            watch.establish_baseline()
+
+            results = watch.poll()
+
+            self.assertEqual(len(results), 1)
+            self.assertEqual(len(storage.recent_events()), 1)
+            self.assertEqual(storage.recent_events()[0].record_id, 101)
+            self.assertEqual(storage.recent_detections()[0].rule_id, "DET-PS-001")
+
+    def test_watch_persists_ordinary_event_without_detection(self) -> None:
+        ordinary = sysmon_xml(record_id=101, command_line="powershell.exe -NoProfile Get-Process")
+        with TemporaryDirectory() as directory, SQLiteStorage(Path(directory) / "watch.db") as storage:
+            watch = SysmonWatch(
+                recent_collector=lambda **kwargs: [sysmon_xml(record_id=100)],
+                newer_collector=lambda *args, **kwargs: [ordinary],
+                storage=storage,
+            )
+            watch.establish_baseline()
+
+            results = watch.poll()
+
+            self.assertEqual(len(results), 1)
+            self.assertEqual(len(storage.recent_events()), 1)
+            self.assertEqual(storage.recent_detections(), [])
 
 
 if __name__ == "__main__":

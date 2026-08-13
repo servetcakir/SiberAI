@@ -10,6 +10,7 @@ from engine.ingestion.windows_event_log import (
 )
 from engine.models.detection import Detection
 from engine.models.event import SecurityEvent
+from engine.storage.sqlite import SQLiteStorage
 
 
 XmlCollector = Callable[..., list[str]]
@@ -45,12 +46,14 @@ class SysmonWatch:
         recent_collector: XmlCollector = collect_recent_sysmon_process_events,
         newer_collector: XmlCollector = collect_sysmon_process_events_after,
         batch_size: int = 50,
+        storage: SQLiteStorage | None = None,
     ) -> None:
         if isinstance(batch_size, bool) or not isinstance(batch_size, int) or not 1 <= batch_size <= 100:
             raise ValueError("batch_size must be an integer between 1 and 100")
         self._recent_collector = recent_collector
         self._newer_collector = newer_collector
         self.batch_size = batch_size
+        self.storage = storage
         self.checkpoint: int | None = None
 
     def establish_baseline(self) -> int:
@@ -75,6 +78,12 @@ class SysmonWatch:
             if record_id <= self.checkpoint:
                 continue
             event = normalize_process_create(data)
-            processed.append(ProcessedEvent(record_id, event, detect(event)))
+            if self.storage is not None:
+                self.storage.store_event(event, record_id)
+            detections = detect(event)
+            if self.storage is not None:
+                for detection in detections:
+                    self.storage.store_detection(detection)
+            processed.append(ProcessedEvent(record_id, event, detections))
             self.checkpoint = record_id
         return processed
