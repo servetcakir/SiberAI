@@ -39,21 +39,23 @@ def split_event_xml(output: str) -> list[str]:
     return [ElementTree.tostring(event, encoding="unicode") for event in events]
 
 
-def collect_recent_sysmon_process_events(limit: int = 10) -> list[str]:
-    """Read a bounded set of recent Sysmon Event ID 1 records via wevtutil."""
-
+def _validate_collection(limit: int) -> None:
     if os.name != "nt":
         raise WindowsEventLogError("Windows Event Log collection is supported only on Windows")
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 or limit > 100:
         raise ValueError("limit must be an integer between 1 and 100")
 
+
+def _run_query(query: str, limit: int, *, newest_first: bool) -> list[str]:
+    _validate_collection(limit)
+
     command = [
         "wevtutil",
         "qe",
         SYSMON_CHANNEL,
-        "/q:*[System[(EventID=1)]]",
+        f"/q:{query}",
         f"/c:{limit}",
-        "/rd:true",
+        f"/rd:{str(newest_first).lower()}",
         "/f:xml",
     ]
     try:
@@ -73,3 +75,21 @@ def collect_recent_sysmon_process_events(limit: int = 10) -> list[str]:
         raise WindowsEventLogError(f"wevtutil query failed: {detail}") from error
 
     return split_event_xml(result.stdout)
+
+
+def collect_recent_sysmon_process_events(limit: int = 10) -> list[str]:
+    """Read a bounded set of recent Sysmon Event ID 1 records via wevtutil."""
+
+    return _run_query("*[System[(EventID=1)]]", limit, newest_first=True)
+
+
+def collect_sysmon_process_events_after(
+    record_id: int,
+    limit: int = 50,
+) -> list[str]:
+    """Read a bounded oldest-first batch newer than an EventRecordID."""
+
+    if isinstance(record_id, bool) or not isinstance(record_id, int) or record_id < 0:
+        raise ValueError("record_id must be a non-negative integer")
+    query = f"*[System[(EventID=1) and (EventRecordID>{record_id})]]"
+    return _run_query(query, limit, newest_first=False)

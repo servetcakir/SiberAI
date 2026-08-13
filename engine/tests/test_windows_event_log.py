@@ -6,6 +6,7 @@ from engine.ingestion.windows_event_log import (
     SYSMON_CHANNEL,
     WindowsEventLogError,
     collect_recent_sysmon_process_events,
+    collect_sysmon_process_events_after,
     split_event_xml,
 )
 from engine.tests.test_sysmon_xml import sysmon_xml
@@ -60,6 +61,19 @@ class WindowsEventLogTests(unittest.TestCase):
         self.assertIn("/f:xml", command)
         self.assertIs(kwargs["shell"], False)
         self.assertIs(kwargs["check"], True)
+
+    @patch("engine.ingestion.windows_event_log.os.name", "nt")
+    @patch("engine.ingestion.windows_event_log.subprocess.run")
+    def test_newer_collector_queries_checkpoint_oldest_first(self, run_mock) -> None:
+        run_mock.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        collect_sysmon_process_events_after(8421, limit=50)
+
+        command = run_mock.call_args.args[0]
+        self.assertIn("/q:*[System[(EventID=1) and (EventRecordID>8421)]]", command)
+        self.assertIn("/c:50", command)
+        self.assertIn("/rd:false", command)
+        self.assertIs(run_mock.call_args.kwargs["shell"], False)
 
     @patch("engine.ingestion.windows_event_log.os.name", "posix")
     def test_non_windows_collection_fails_clearly(self) -> None:

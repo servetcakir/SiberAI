@@ -5,13 +5,13 @@ from engine.ingestion.sysmon import normalize_process_create
 from engine.ingestion.sysmon_xml import SysmonXmlError, parse_process_create_xml
 
 
-def sysmon_xml(*, event_id: str = "1", command_line: str = "powershell.exe -EncodedCommand SQBFAFgA") -> str:
+def sysmon_xml(*, event_id: str = "1", record_id: int = 8421, command_line: str = "powershell.exe -EncodedCommand SQBFAFgA") -> str:
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
   <System>
     <Provider Name="Microsoft-Windows-Sysmon" Guid="{{5770385f-c22a-43e0-bf4c-06f5698ffbd9}}" />
     <EventID>{event_id}</EventID>
-    <EventRecordID>8421</EventRecordID>
+    <EventRecordID>{record_id}</EventRecordID>
     <Channel>Microsoft-Windows-Sysmon/Operational</Channel>
     <Computer>WS-FIN-042.siberai.local</Computer>
   </System>

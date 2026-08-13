@@ -1,18 +1,83 @@
 import argparse
+import time
 
 from engine.detection.engine import detect
 from engine.ingestion.sysmon import normalize_process_create
 from engine.ingestion.sysmon_xml import SysmonXmlError, parse_process_create_xml
 from engine.ingestion.windows_event_log import (
+    SYSMON_CHANNEL,
     WindowsEventLogError,
     collect_recent_sysmon_process_events,
 )
+from engine.models.detection import Detection
+from engine.models.event import SecurityEvent
+from engine.watch import SysmonWatch
+
+
+def _positive_interval(value: str) -> float:
+    try:
+        interval = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("interval must be a number greater than zero") from error
+    if interval <= 0:
+        raise argparse.ArgumentTypeError("interval must be greater than zero")
+    return interval
+
+
+def _print_event(event: SecurityEvent, detections: list[Detection]) -> int:
+    if not detections:
+        print(f"[OK] {event.host or 'unknown host'} | {event.process or 'unknown process'}")
+        return 0
+
+    for detection in detections:
+        print(f"[{detection.severity.value.upper()}] {detection.title}")
+        print(f"Rule: {detection.rule_id}")
+        print(f"Host: {event.host or 'unknown'}")
+        print(f"Process: {event.process or 'unknown'}")
+        print(f"Risk: {detection.risk_score}/100")
+        print(f"MITRE: {', '.join(detection.mitre_techniques) or 'none'}")
+        print()
+    return len(detections)
+
+
+def run_watch(interval: float, *, monitor: SysmonWatch | None = None) -> tuple[int, int]:
+    watch = monitor or SysmonWatch()
+    watch.establish_baseline()
+    processed_count = 0
+    detection_count = 0
+    print("SiberAI Engine")
+    print(f"Monitoring: {SYSMON_CHANNEL}")
+    print("Event type: Process Create (1)")
+    print("Status: watching for new events...")
+    print("Press Ctrl+C to stop.")
+
+    try:
+        while True:
+            try:
+                for result in watch.poll():
+                    processed_count += 1
+                    detection_count += _print_event(result.event, result.detections)
+            except (ValueError, SysmonXmlError, WindowsEventLogError) as error:
+                print(f"SiberAI watch error: {error}")
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print(f"\nStopped. Processed {processed_count} event(s); produced {detection_count} detection(s).")
+    return processed_count, detection_count
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run SiberAI against recent local Sysmon process events.")
     parser.add_argument("--count", type=int, default=10, help="Recent events to inspect (1-100; default: 10)")
+    parser.add_argument("--watch", action="store_true", help="Watch for new Sysmon process events")
+    parser.add_argument("--interval", type=_positive_interval, default=1.0, help="Watch polling interval in seconds (default: 1)")
     args = parser.parse_args()
+
+    if args.watch:
+        try:
+            run_watch(args.interval)
+        except (ValueError, SysmonXmlError, WindowsEventLogError) as error:
+            parser.exit(1, f"SiberAI collector error: {error}\n")
+        return 0
 
     try:
         xml_events = collect_recent_sysmon_process_events(args.count)
@@ -33,20 +98,7 @@ def main() -> int:
             continue
 
         processed_count += 1
-        detections = detect(event)
-        if not detections:
-            print(f"[OK] {event.host or 'unknown host'} | {event.process or 'unknown process'} | no detections")
-            continue
-
-        for detection in detections:
-            detection_count += 1
-            print(f"[{detection.severity.value.upper()}] {detection.title}")
-            print(f"Rule: {detection.rule_id}")
-            print(f"Host: {event.host or 'unknown'}")
-            print(f"Process: {event.process or 'unknown'}")
-            print(f"Risk: {detection.risk_score}/100")
-            print(f"MITRE: {', '.join(detection.mitre_techniques) or 'none'}")
-            print()
+        detection_count += _print_event(event, detect(event))
 
     print(f"Processed {processed_count} event(s); produced {detection_count} detection(s).")
     return 0
